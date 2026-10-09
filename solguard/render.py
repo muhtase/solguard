@@ -453,6 +453,16 @@ def render_behaviour(rep: TokenReport, b: Behaviour, first: Callout | None,
             L.append(f"  ▼ {_esc(ntxt)}")
         L.append("")
 
+    # ── Kesimpulan & verdict ────────────────────────────────────────────────
+    c = b.conclusion
+    if c.label:
+        L.append(f"🎯 <b>KESIMPULAN</b>")
+        for ln in c.lines[: 2 if compact else 4]:
+            L.append(f"  • {_esc(ln)}")
+        L.append(f"{c.emoji} <b>VERDICT: {_esc(c.label)}</b>")
+        L.append(f"  <i>{_esc(c.action)}</i>")
+        L.append("")
+
     srcs = rep.raw.get("behaviour_sources") or {}
     off = [k for k, ok in srcs.items() if not ok]
     if off:

@@ -36,7 +36,7 @@ async def run(mints: list[str]) -> None:
             print(_plain(text))
             print(f"[debug] sumber: {rep.sources_ok}  pilar: {verdict.pillars}  ({len(text)} char)")
             print("-" * 66)
-            b = await behaviour(rep)
+            b = await behaviour(rep, verdict)
             first = history.first_callout(mint)
             path = history.path_since(mint, first.ts) if first else None
             if "--journal" in sys.argv:

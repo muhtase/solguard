@@ -8,7 +8,7 @@ import time
 from . import clusters, divergence, history, memory
 from .flow import annotate_flows
 from .holders import build_top_holders, concentration
-from .models import Behaviour, TokenReport
+from .models import Behaviour, TokenReport, Verdict
 from .providers import dexscreener, gmgn, jupiter, rugcheck, trenchdb
 
 log = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ async def analyze(mint: str) -> TokenReport:
     return rep
 
 
-async def behaviour(rep: TokenReport) -> Behaviour:
+async def behaviour(rep: TokenReport, verdict: Verdict | None = None) -> Behaviour:
     """Lapisan perilaku (mage): TokenMemory, smart money, divergence.
 
     Dipanggil TERPISAH dari analyze() dan tidak menyentuh skor risiko. Panggilan
@@ -119,6 +119,8 @@ async def behaviour(rep: TokenReport) -> Behaviour:
     )
     divergence.directional_notes(rep, b)
     b.flags.append("gmgn:ok" if traders or candles else "gmgn:none")
+    if verdict is not None:
+        b.conclusion = divergence.conclude(rep, verdict, b)
     return b
 
 

@@ -250,10 +250,27 @@ class Divergence:
 
 
 @dataclass
+class Conclusion:
+    """Putusan tindakan: risiko (pesan 1) + perilaku (pesan 2) dibaca bersama.
+
+    Bukan skor baru — risiko tetap gerbang, perilaku cuma memilah token yang
+    lolos gerbang jadi 'pantau' atau 'menarik'. Tier-nya masuk jurnal sebagai
+    flag `v:<tier>` supaya /hasil bisa menguji putusan ini terhadap pasar.
+    """
+
+    tier: str = "unknown"      # skip / avoid / watch / interesting / unknown
+    emoji: str = "❔"
+    label: str = ""
+    action: str = ""           # satu kalimat: yang harus dilakukan
+    lines: list[str] = field(default_factory=list)   # alasan, 2–4 baris
+
+
+@dataclass
 class Behaviour:
     memory: TokenMemory = field(default_factory=TokenMemory)
     smart: SmartMoneyView = field(default_factory=SmartMoneyView)
     divergence: Divergence = field(default_factory=Divergence)
+    conclusion: Conclusion = field(default_factory=Conclusion)
     # sinyal arah yang DULU tercampur ke skor; sekarang dipisah ke sini
     positives: list[str] = field(default_factory=list)
     negatives: list[str] = field(default_factory=list)

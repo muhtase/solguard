@@ -65,6 +65,9 @@ HELP = (
     "net beli/jual; NOL saat harga & holder lari = FOMO divergence\n"
     "D3 urutan: harga vs holder vs volume vs likuiditas 1j/6j/24j\n"
     "⏱ sejak cek pertama: return, MAE (drawdown terdalam), MFE\n\n"
+    "<b>🎯 Verdict</b> di akhir pesan 🧠 — risiko jadi gerbang, perilaku memilah:\n"
+    "🔴 SKIP (cacat fatal / skor &lt;32) · 🟠 HINDARI DULU (skor 32–45 atau tanda bahaya perilaku) · "
+    "🟡 PANTAU (bersih tapi tanpa dukungan) · 🟢 MENARIK (bersih + smart money/divergensi mendukung)\n\n"
     "<b>/hasil</b> — kalibrasi: tiap cek dipantau 24 jam, lalu median forward return & MAE "
     "per putusan dan per flag. Ini cara tahu fitur mana yang beneran punya nilai.\n\n"
     "<b>Cacat fatal</b> (langsung 🔴 apa pun skornya):\n"
@@ -142,7 +145,7 @@ async def _build_report(mint: str, *, fresh: bool = False):
 async def _build_behaviour(rep, verdict, *, user_id: int | None, journal: bool) -> str:
     """Pesan kedua. Juga mencatat cek ini ke jurnal (callout = timestamp)."""
     try:
-        b = await behaviour(rep)
+        b = await behaviour(rep, verdict)
     except Exception:
         log.exception("Lapisan perilaku gagal untuk %s", rep.mint)
         b = Behaviour()

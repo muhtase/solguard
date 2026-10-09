@@ -14,7 +14,7 @@ terpisah dan dicatat ke jurnal supaya nilai prediktifnya bisa diuji (/hasil).
 """
 from __future__ import annotations
 
-from .models import Behaviour, Divergence, SmartMoneyView, TokenReport
+from .models import Behaviour, Conclusion, Divergence, SmartMoneyView, TokenReport, Verdict
 from .providers.trenchdb import SmartMoneySummary
 
 SMART_TAGS = {"smart_degen", "launchpad_smart", "renowned", "top_followed", "kol", "pump_smart"}
@@ -216,3 +216,103 @@ def directional_notes(rep: TokenReport, b: Behaviour) -> None:
         f.append("d1:runner")
     if s.top_holder_overlap:
         f.append("overlap")
+
+
+# --------------------------------------------------------------------------- #
+# Kesimpulan & verdict tindakan
+# --------------------------------------------------------------------------- #
+def conclude(rep: TokenReport, v: Verdict, b: Behaviour) -> Conclusion:
+    """Gabungkan gerbang risiko dengan bacaan perilaku jadi satu putusan tindakan.
+
+    Urutan logikanya sengaja hierarkis, bukan penjumlahan:
+      1. risiko struktur jadi GERBANG — cacat fatal / skor rendah = SKIP, titik;
+      2. tanda bahaya perilaku (FOMO divergence, harga lari tanpa holder,
+         top trader mencurigakan) = HINDARI DULU walau strukturnya bersih;
+      3. sisanya dipilah: ada dukungan perilaku -> MENARIK, tidak ada -> PANTAU.
+    Tidak ada bobot angka di sini supaya tiap putusan bisa ditelusuri alasannya.
+    """
+    c = Conclusion()
+    s, d, m = b.smart, b.divergence, b.memory
+    why: list[str] = []
+
+    # 1. gerbang struktur
+    if v.hard_fails:
+        c.tier, c.emoji, c.label = "skip", "🔴", "SKIP"
+        c.action = "Jangan sentuh. Cacat strukturnya tidak bisa ditebus sinyal perilaku apa pun."
+        why.append(f"Cacat fatal: {v.hard_fails[0]}" + (f" (+{len(v.hard_fails) - 1} lagi)" if len(v.hard_fails) > 1 else ""))
+        c.lines = why
+        return c
+    if v.score < 32:
+        c.tier, c.emoji, c.label = "skip", "🔴", "SKIP"
+        c.action = "Jangan sentuh. Risiko dirampok/kejebak terlalu besar."
+        why.append(f"Skor aman cuma {v.score:.0f}/100")
+        if v.negatives:
+            why.append(v.negatives[0])
+        c.lines = why
+        return c
+
+    # Aliran smart money cuma dihitung kalau MATERIAL relatif ke ukuran token:
+    # BONK net jual $1,7k di likuiditas $6,6M itu kebisingan, bukan "keluar".
+    material = abs(s.net_usd_7d) >= max(2000.0, 0.005 * (rep.liquidity_usd or 0.0))
+
+    # 2. tanda bahaya perilaku
+    bahaya: list[str] = []
+    if s.status == "fomo_divergence":
+        bahaya.append("FOMO divergence: retail masuk, smart money nol")
+    if d.scenario == "fomo":
+        bahaya.append("Harga lari tanpa peserta baru — rawan dibalik")
+    if s.traders_total and s.traders_suspicious >= 10:
+        bahaya.append(f"{s.traders_suspicious}/{s.traders_total} top trader ditandai mencurigakan")
+    if s.status == "present" and material and s.net_usd_7d < 0 and s.makers_24h and s.net_usd_24h < 0:
+        bahaya.append(f"Smart money sedang keluar: net jual ${abs(s.net_usd_7d):,.0f}/7 hari, masih jual 24j terakhir")
+
+    # 3. dukungan perilaku
+    dukung: list[str] = []
+    if s.status == "present" and material and s.net_usd_7d > 0:
+        dukung.append(f"Smart money {s.makers_7d} wallet net BELI ${s.net_usd_7d:,.0f}/{s.window_days} hari")
+    if s.top_holder_overlap:
+        dukung.append(f"{s.top_holder_overlap} top holder = wallet smart money terpantau")
+    if d.scenario == "capital_led":
+        dukung.append("Capital-led: likuiditas & holder naik, harga belum — kandidat delayed repricing")
+    if m.resurrection_watch:
+        dukung.append("Pola resurrection-watch D1 terpenuhi (eksploratori)")
+    if s.traders_total and s.traders_smart_tagged >= 5:
+        dukung.append(f"{s.traders_smart_tagged} top trader ber-tag smart money")
+
+    struktur = f"Struktur {v.label.lower()} ({v.score:.0f}/100)"
+    if v.score < 46:
+        c.tier, c.emoji, c.label = "avoid", "🟠", "HINDARI DULU"
+        c.action = "Lebih banyak alasan skip daripada masuk. Kalau nekat, anggap uang hangus."
+        why.append(struktur)
+        why.extend(bahaya[:1] or dukung[:1])
+    elif bahaya:
+        c.tier, c.emoji, c.label = "avoid", "🟠", "HINDARI DULU"
+        c.action = "Struktur boleh, tapi perilakunya lagi melawan. Tunggu tanda bahayanya hilang."
+        why.append(struktur)
+        why.extend(bahaya[:2])
+    elif dukung and v.score >= 62:
+        c.tier, c.emoji, c.label = "interesting", "🟢", "MENARIK"
+        c.action = "Layak masuk daftar pendek. Size wajar, stop wajib, dan cek lagi sebelum eksekusi."
+        why.append(struktur)
+        why.extend(dukung[:2])
+    elif dukung:
+        c.tier, c.emoji, c.label = "watch", "🟡", "PANTAU"
+        c.action = "Ada dukungan perilaku, tapi strukturnya masih berisiko. Size mikro kalau mau."
+        why.append(struktur)
+        why.extend(dukung[:2])
+    else:
+        c.tier, c.emoji, c.label = "watch", "🟡", "PANTAU"
+        if s.status in ("absent", "unknown"):
+            why.append(struktur)
+            why.append("Belum ada yang tahu lebih dulu di sini" if s.status == "absent"
+                       else "Kehadiran smart money tidak bisa dinilai")
+            c.action = "Tidak ada alasan masuk sekarang. Refresh berkala — kalau smart money muncul, baca ulang."
+        else:
+            why.append(struktur)
+            arah = "net jual" if s.net_usd_7d < 0 else "net beli"
+            why.append(f"Smart money ada ({s.makers_7d} wallet) tapi {arah} ${abs(s.net_usd_7d):,.0f} "
+                       f"{'tidak material' if not material else 'belum didukung divergensi'} untuk token sebesar ini")
+            c.action = "Tidak ada edge yang terbaca. Pantau, jangan kejar."
+    c.lines = why
+    b.flags.append(f"v:{c.tier}")
+    return c
