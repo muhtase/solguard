@@ -5,11 +5,11 @@ import asyncio
 import logging
 import time
 
-from . import clusters, history
+from . import clusters, divergence, history, memory
 from .flow import annotate_flows
 from .holders import build_top_holders, concentration
-from .models import TokenReport
-from .providers import dexscreener, jupiter, rugcheck
+from .models import Behaviour, TokenReport
+from .providers import dexscreener, gmgn, jupiter, rugcheck, trenchdb
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,9 @@ async def analyze(mint: str) -> TokenReport:
 
     rep = TokenReport(mint=mint)
     rep.sources_ok = {"rugcheck": rc is not None, "dexscreener": bool(ds), "jupiter": jp is not None}
+    # Lapisan perilaku punya sumber sendiri; kegagalannya TIDAK memotong skor
+    # risiko (bukan sumber risiko), tapi tetap dilaporkan di panelnya.
+    rep.raw["behaviour_sources"] = {"gmgn": gmgn.enabled(), "trench_db": trenchdb.available()}
 
     if not any(rep.sources_ok.values()):
         rep.warnings.append("Semua sumber data gagal dihubungi.")
@@ -57,15 +60,66 @@ async def analyze(mint: str) -> TokenReport:
         rep.warnings.append("RugCheck tidak merespons — data keamanan & holder tidak lengkap.")
 
     # Jendela 4 jam tidak ada di sumber mana pun, jadi dihitung dari riwayat
-    # yang kita rekam sendiri tiap kali token ini dicek.
+    # yang kita rekam sendiri tiap kali token ini dicek. Likuiditas juga.
+    history.record(
+        mint, rep.holder_count, price=rep.price_usd, liq=rep.liquidity_usd or None,
+        vol24=rep.volume_24h or None, mcap=rep.market_cap,
+    )
+    rep.holder_history_points = history.snapshot_count(mint)
     if rep.holder_count:
-        history.record(mint, rep.holder_count)
-        rep.holder_history_points = history.snapshot_count(mint)
         got = history.change_over(mint, 4 * 3600, rep.holder_count)
         if got:
             rep.holder_change_4h, rep.holder_4h_baseline_age = got
 
     return rep
+
+
+async def behaviour(rep: TokenReport) -> Behaviour:
+    """Lapisan perilaku (mage): TokenMemory, smart money, divergence.
+
+    Dipanggil TERPISAH dari analyze() dan tidak menyentuh skor risiko. Panggilan
+    GMGN di sini berurutan (pacing 1 req/1,5 s, berbagi IP dengan trench-kolektor),
+    jadi butuh beberapa detik — makanya dikirim sebagai pesan kedua.
+    """
+    b = Behaviour()
+    sm = None
+    try:
+        sm = trenchdb.smart_money_summary(rep.mint)
+    except Exception:
+        log.warning("Ringkasan smart money gagal", exc_info=True)
+    known = trenchdb.known_smart_wallets() if trenchdb.available() else set()
+
+    traders: list[dict] = []
+    candles: list[dict] = []
+    if gmgn.enabled():
+        try:
+            traders = await gmgn.top_traders(rep.mint)
+        except Exception:
+            log.warning("GMGN top trader gagal", exc_info=True)
+        try:
+            # Token muda tidak perlu 300 hari lilin; hemat panggilan & waktu
+            pages = 1
+            if rep.age_hours is not None:
+                pages = max(1, min(int(rep.age_hours / 24 / 100) + 1, 99))
+            candles = await gmgn.kline_daily(rep.mint, max_pages=min(pages, gmgn.config.GMGN_KLINE_PAGES_MAX))
+        except Exception:
+            log.warning("GMGN kline gagal", exc_info=True)
+
+    b.memory = memory.build(rep, candles)
+    b.smart = divergence.smart_money(rep, sm, traders, known)
+
+    liq = rep.liquidity_usd or None
+    liq_changes = {
+        "1h": history.liq_change_over(rep.mint, 3600, liq),
+        "6h": history.liq_change_over(rep.mint, 6 * 3600, liq),
+        "24h": history.liq_change_over(rep.mint, 24 * 3600, liq),
+    }
+    b.divergence = divergence.divergence(
+        rep, rep.raw.get("volume_windows") or {}, liq_changes, rep.holder_history_points
+    )
+    divergence.directional_notes(rep, b)
+    b.flags.append("gmgn:ok" if traders or candles else "gmgn:none")
+    return b
 
 
 def _fill_identity(rep: TokenReport, rc: dict | None, ds: list, jp: dict | None) -> None:
@@ -142,6 +196,8 @@ def _fill_activity(rep: TokenReport, ds: list, jp: dict | None) -> None:
     rep.sells_24h = int(txns.get("sells") or 0)
     rep.price_change_24h = chg.get("h24")
     rep.price_change_1h = chg.get("h1")
+    rep.raw["price_change_6h"] = chg.get("h6")
+    rep.raw["volume_windows"] = {k: vol.get(k) for k in ("m5", "h1", "h6", "h24")}
 
     if jp:
         s24 = jupiter.stats(jp, "24h")

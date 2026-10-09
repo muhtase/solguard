@@ -7,6 +7,12 @@ Filosofi:
   2. Sisanya skor 4 pilar berbobot: keamanan, distribusi, likuiditas, aktivitas.
   3. Skor BUKAN prediksi harga. Ini ukuran "seberapa besar peluang lo dirampok
      atau kejebak likuiditas", bukan "seberapa besar peluang naik".
+  4. (Okt 2026, dari framework mage) Skor RISIKO dan sinyal PELUANG dipisah
+     total. Dulu pilar "aktivitas" mencampur tekanan beli, holder naik, dan top
+     holder akumulasi ke dalam angka yang sama dengan mint authority — satu
+     angka gabungan jadi kotak hitam. Sekarang pilar aktivitas HANYA menilai
+     kualitas/manipulasi (wash trading, volume palsu, sepi). Semua sinyal arah
+     pindah ke lapisan perilaku (divergence.py) dan panel terpisah.
 """
 from __future__ import annotations
 
@@ -302,18 +308,9 @@ def _activity_score(rep: TokenReport, notes: dict) -> float:
             s -= 15
             notes["neg"].append("Volume nyaris mati dibanding likuiditas")
 
-    total_tx = rep.buys_24h + rep.sells_24h
-    if total_tx > 0:
-        buy_ratio = rep.buys_24h / total_tx
-        if buy_ratio < 0.4:
-            s -= 12
-            notes["neg"].append(
-                f"Tekanan jual dominan ({rep.buys_24h} buy vs {rep.sells_24h} sell)"
-            )
-        elif buy_ratio > 0.6:
-            s += 6
-            notes["pos"].append(f"Tekanan beli dominan ({rep.buys_24h} buy vs {rep.sells_24h} sell)")
-    else:
+    # Arah (buy vs sell ratio) bukan urusan skor risiko -> divergence.py.
+    # Yang tersisa di sini cuma "ada kehidupan atau tidak".
+    if rep.buys_24h + rep.sells_24h == 0:
         s -= 25
         notes["neg"].append("Tidak ada transaksi 24 jam terakhir")
 
@@ -324,29 +321,8 @@ def _activity_score(rep: TokenReport, notes: dict) -> float:
         elif rep.traders_24h > 1000:
             notes["pos"].append(f"{rep.traders_24h:,} trader unik dalam 24j")
 
-    # Arah gerak top holder — yang paling relevan buat risiko dump jangka pendek
-    graded = [h for h in rep.holders if h.flow_ok and not h.is_infrastructure]
-    if graded:
-        sellers = sum(1 for h in graded if h.flow_out_amount > h.flow_in_amount)
-        buyers = sum(1 for h in graded if h.flow_in_amount > h.flow_out_amount)
-        if sellers >= 2 and sellers > buyers:
-            s -= min(22.0, sellers * 6)
-            notes["neg"].append(
-                f"{sellers} dari {len(graded)} top holder sedang mengurangi posisi"
-            )
-        elif buyers >= 2 and buyers > sellers:
-            s += min(10.0, buyers * 3)
-            notes["pos"].append(
-                f"{buyers} dari {len(graded)} top holder sedang menambah posisi"
-            )
-
-    if rep.holder_change_24h is not None:
-        if rep.holder_change_24h < -2:
-            s -= 12
-            notes["neg"].append(f"Holder turun {abs(rep.holder_change_24h):.1f}% dalam 24j")
-        elif rep.holder_change_24h > 5:
-            s += 5
-            notes["pos"].append(f"Holder naik {rep.holder_change_24h:.1f}% dalam 24j")
+    # Arah gerak top holder & pertumbuhan holder: sinyal PELUANG, bukan risiko.
+    # Dipindah ke divergence.directional_notes() supaya tidak mencampur skor.
 
     return _clamp(s)
 
@@ -376,15 +352,17 @@ def evaluate(rep: TokenReport) -> Verdict:
 
     score = round(_clamp(score), 1)
 
+    # Label dibaca sebagai RISIKO. "Aman" di sini bukan "bakal naik" —
+    # peluang dibaca di panel perilaku yang terpisah.
     if fails:
-        emoji, label = "🔴", "JANGAN BELI"
-        size = "Skip. Ada cacat fatal yang gak sebanding sama upside apa pun."
+        emoji, label = "🔴", "CACAT FATAL"
+        size = "Skip. Ada cacat yang gak sebanding sama upside apa pun."
     elif score >= 78:
-        emoji, label = "🟢", "LAYAK DIPERTIMBANGKAN"
-        size = "Risiko relatif terkendali. Tetap pakai size wajar & pasang stop."
+        emoji, label = "🟢", "RISIKO RENDAH"
+        size = "Struktur token relatif bersih. Peluangnya? Lihat panel perilaku."
     elif score >= 62:
-        emoji, label = "🟢", "BOLEH, TAPI HATI-HATI"
-        size = "Masuk kecil dulu. Ada beberapa catatan di bawah yang perlu lo terima."
+        emoji, label = "🟢", "RISIKO TERKENDALI"
+        size = "Ada catatan yang harus lo terima. Size wajar, stop wajib."
     elif score >= 46:
         emoji, label = "🟡", "BERISIKO"
         size = "Kalau tetap mau, anggap uang hangus. Size mikro maksimal."
@@ -392,7 +370,7 @@ def evaluate(rep: TokenReport) -> Verdict:
         emoji, label = "🟠", "RISIKO TINGGI"
         size = "Lebih banyak alasan buat skip daripada masuk."
     else:
-        emoji, label = "🔴", "JANGAN BELI"
+        emoji, label = "🔴", "JANGAN SENTUH"
         size = "Skip."
 
     return Verdict(

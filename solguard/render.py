@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from .flow import flow_label, net_flow_pct
 from .holders import fmt_age
-from .models import TokenReport, Verdict
+from .models import Behaviour, Callout, TokenReport, Verdict
 
 BAR_FULL = "█"
 BAR_EMPTY = "░"
@@ -98,10 +98,12 @@ def render_report(rep: TokenReport, v: Verdict, compact: bool = False) -> str:
     L.append(f"<code>{_esc(rep.mint)}</code>")
     L.append("")
 
-    # ── Verdict ─────────────────────────────────────────────────────────────
-    L.append(f"{v.emoji} <b>{_esc(v.label)}</b> — <b>{v.score}</b>/100")
+    # ── Verdict (RISIKO saja — peluang ada di pesan kedua) ──────────────────
+    L.append(f"{v.emoji} <b>{_esc(v.label)}</b> — skor aman <b>{v.score}</b>/100")
     L.append(f"<code>{_bar(v.score)}</code>")
     L.append(f"<i>{_esc(v.suggested_size)}</i>")
+    L.append("<i>Skor ini = risiko struktur (dirampok/kejebak). Bukan sinyal beli. "
+             "Peluang &amp; perilaku dibaca di pesan 🧠 berikutnya.</i>")
     L.append("")
 
     if v.hard_fails:
@@ -115,9 +117,9 @@ def render_report(rep: TokenReport, v: Verdict, compact: bool = False) -> str:
         "security": "Keamanan",
         "distribution": "Distribusi",
         "liquidity": "Likuiditas",
-        "activity": "Aktivitas",
+        "activity": "Kualitas tx",
     }
-    L.append("📊 <b>RINCIAN SKOR</b>")
+    L.append("📊 <b>RINCIAN SKOR RISIKO</b>")
     for k, lbl in names.items():
         sc = v.pillars.get(k, 0)
         L.append(f"<code>{lbl:<11}{_bar(sc, 8)} {sc:>5.1f}</code>")
@@ -322,4 +324,170 @@ def render_report(rep: TokenReport, v: Verdict, compact: bool = False) -> str:
     L.append("")
     L.append(f"<i>Data per {_now_wib()} · Bukan saran finansial. DYOR.</i>")
 
+    return "\n".join(L)
+
+
+# =========================================================================== #
+# Pesan kedua: perilaku & konteks (framework mage) — DIPISAH dari risiko
+# =========================================================================== #
+def _chg(v: float | None, width: int = 7) -> str:
+    if v is None:
+        return f"{'—':>{width}}"
+    if abs(v) >= 1000:
+        return f"{v / 1000:+.1f}k%".rjust(width)
+    return f"{v:+.0f}%".rjust(width) if abs(v) >= 10 else f"{v:+.1f}%".rjust(width)
+
+
+def _accel(v: float | None, width: int = 7) -> str:
+    return f"{'—':>{width}}" if v is None else f"{v:.1f}x".rjust(width)
+
+
+def _ago(ts: int | None, now: int) -> str:
+    return fmt_age(ts, now) if ts else "—"
+
+
+def render_behaviour(rep: TokenReport, b: Behaviour, first: Callout | None,
+                     path: tuple[float | None, float | None, int] | None,
+                     compact: bool = False) -> str:
+    L: list[str] = []
+    now = int(time.time())
+    L.append(f"🧠 <b>PERILAKU &amp; KONTEKS</b> — <code>${_esc(rep.symbol)}</code>")
+    L.append("<i>Lapisan terpisah dari skor risiko. Semua ini KANDIDAT fitur yang "
+             "nilai prediktifnya diuji lewat /hasil, bukan resep.</i>")
+    L.append("")
+
+    # ── Callout sebagai timestamp ───────────────────────────────────────────
+    if first and first.price and rep.price_usd:
+        chg = (rep.price_usd / first.price - 1) * 100
+        L.append("⏱ <b>SEJAK LO PERTAMA CEK</b>")
+        L.append(f"  {_ago(first.ts, now)} · harga waktu itu {_price(first.price)} · putusan "
+                 f"<i>{_esc(first.label)}</i> ({first.risk_score:.0f})" if first.risk_score is not None
+                 else f"  {_ago(first.ts, now)} · harga waktu itu {_price(first.price)}")
+        line = f"  Sekarang: <b>{chg:+.1f}%</b>"
+        if first.done and first.mae_24h is not None:
+            line += f" · 24j pertama: fwd {_chg(first.fwd_24h, 0).strip()}, MAE <b>{first.mae_24h:+.1f}%</b>, MFE {first.mfe_24h:+.1f}%"
+        elif path and path[2] >= 2 and path[0]:
+            lo, hi, n = path
+            L.append(line)
+            line = (f"  Jalur sejak itu ({n} sampel): terendah <b>{(lo / first.price - 1) * 100:+.1f}%</b> "
+                    f"(MAE sementara) · tertinggi {(hi / first.price - 1) * 100:+.1f}%")
+        L.append(line)
+        L.append("")
+
+    # ── D1 TokenMemory ──────────────────────────────────────────────────────
+    m = b.memory
+    L.append("🧬 <b>MEMORI TOKEN</b> <i>(D1)</i>")
+    if not m.days_covered:
+        L.append("  Riwayat harian tidak terbaca (GMGN kline kosong/nonaktif).")
+    else:
+        ath = f"{_price(m.ath_price)}"
+        if m.ath_mcap:
+            ath += f" ≈ mcap {_money(m.ath_mcap)}"
+        L.append(f"  Puncak {m.days_covered} hari: {ath}, {m.days_since_ath} hari lalu")
+        if m.drawdown_pct is not None:
+            L.append(f"  Dari puncak    : <b>{m.drawdown_pct:+.0f}%</b> · "
+                     f"{'mantan RUNNER' if m.was_runner else 'bukan mantan runner'}")
+        vol = "—"
+        if m.vol_collapse_ratio is not None:
+            vol = f"{m.vol_collapse_ratio * 100:.0f}% dari rata-rata 30 hari sebelumnya"
+        elif m.vol_7d_avg is not None:
+            vol = f"{_money(m.vol_7d_avg)}/hari (riwayat <37 hari)"
+        L.append(f"  Volume 7 hari  : {vol}")
+        if m.range_7d_pct is not None:
+            L.append(f"  Rentang 7 hari : {m.range_7d_pct:.0f}% · harga 7h {_chg(m.price_7d_pct, 0).strip()}")
+        if m.resurrection_watch:
+            L.append("  🔎 <b>RESURRECTION-WATCH</b> — pola absorpsi D1 terpenuhi (eksploratori)")
+        if m.reasons and not compact:
+            L.append(f"  <i>{_esc(m.reasons[-1] if m.resurrection_watch else '; '.join(m.reasons[:2]))}</i>")
+    L.append("")
+
+    # ── D4 Smart money ──────────────────────────────────────────────────────
+    sm = b.smart
+    icon = {"present": "👀", "absent": "🫥", "fomo_divergence": "🚨", "unknown": "❔"}[sm.status]
+    L.append(f"{icon} <b>SMART MONEY</b> <i>(D4)</i>")
+    L.append(f"  {_esc(sm.reading)}")
+    if sm.status == "present" and sm.last_ts:
+        L.append(f"  Terakhir: {_ago(sm.last_ts, now)}")
+    if sm.top_holder_overlap:
+        L.append(f"  🔗 Overlap: <b>{sm.top_holder_overlap}</b> top holder = wallet smart money terpantau")
+    if sm.traders_total:
+        prof = f"{sm.traders_in_profit}/{sm.traders_total} untung"
+        extra = []
+        if sm.traders_smart_tagged:
+            extra.append(f"{sm.traders_smart_tagged} ber-tag smart")
+        if sm.traders_suspicious:
+            extra.append(f"{sm.traders_suspicious} mencurigakan")
+        if sm.traders_fresh:
+            extra.append(f"{sm.traders_fresh} wallet baru")
+        if sm.traders_cex:
+            extra.append("CEX: " + ", ".join(sm.traders_cex[:3]))
+        L.append(f"  Top trader GMGN: {prof}" + (f" · {' · '.join(extra)}" if extra else ""))
+        if sm.traders_realized_usd is not None:
+            L.append(f"  PnL realisasi gabungan top 100: <b>{'+' if sm.traders_realized_usd >= 0 else '−'}{_money(abs(sm.traders_realized_usd))}</b>")
+    L.append("")
+
+    # ── D3 Urutan ───────────────────────────────────────────────────────────
+    d = b.divergence
+    L.append("📐 <b>URUTAN ATTENTION → CAPITAL → PRICE</b> <i>(D3)</i>")
+    L.append("<pre>")
+    L.append(f"{'':<11}{'1j':>7}{'6j':>7}{'24j':>7}")
+    L.append(f"{'Harga':<11}{_chg(d.price_1h)}{_chg(d.price_6h)}{_chg(d.price_24h)}")
+    L.append(f"{'Holder':<11}{_chg(d.holders_1h)}{_chg(d.holders_6h)}{_chg(d.holders_24h)}")
+    L.append(f"{'Volume*':<11}{_accel(d.vol_accel_1h)}{_accel(d.vol_accel_6h)}{'1.0x':>7}")
+    L.append(f"{'Likuiditas':<11}{_chg(d.liq_1h)}{_chg(d.liq_6h)}{_chg(d.liq_24h)}")
+    L.append("</pre>")
+    L.append(f"  <b>{_esc(d.reading)}</b>")
+    if not compact:
+        note = "*volume = laju jendela itu dibanding laju 24j; >1x = sedang akselerasi."
+        if d.liq_24h is None:
+            note += f" Likuiditas direkam lokal tiap cek/pantau ({d.liq_points} snapshot) — kolomnya terisi setelah token ini dipantau."
+        L.append(f"  <i>{note}</i>")
+    L.append("")
+
+    # ── Sinyal arah (dulu tercampur ke skor) ────────────────────────────────
+    if b.positives or b.negatives:
+        L.append("🧭 <b>SINYAL ARAH</b> <i>(tidak masuk skor risiko)</i>")
+        for ptxt in b.positives[: 3 if compact else 6]:
+            L.append(f"  ▲ {_esc(ptxt)}")
+        for ntxt in b.negatives[: 3 if compact else 6]:
+            L.append(f"  ▼ {_esc(ntxt)}")
+        L.append("")
+
+    srcs = rep.raw.get("behaviour_sources") or {}
+    off = [k for k, ok in srcs.items() if not ok]
+    if off:
+        L.append(f"<i>⚠️ Sumber perilaku nonaktif: {', '.join(off)}</i>")
+    L.append("<i>Cek ini dicatat sebagai timestamp. Harga dipantau 24 jam → forward return &amp; MAE masuk /hasil. "
+             "mage: \"callout itu timestamp, bukan sinyal entry.\"</i>")
+    return "\n".join(L)
+
+
+def render_calibration(cal: dict) -> str:
+    """Kalibrasi putusan & flag terhadap pasar (Uji B versi SolGuard)."""
+    L = ["📏 <b>KALIBRASI PUTUSAN</b>",
+         f"<i>{cal['total']} cek tercatat · {cal['done']} sudah lewat 24 jam &amp; dihitung.</i>", ""]
+    if cal["done"] < 5:
+        L.append("Belum cukup data. Tiap token yang lo cek dipantau 24 jam; angka di sini "
+                 "baru bermakna setelah puluhan cek. Jangan baca pola dari 2–3 titik.")
+        return "\n".join(L)
+
+    def tbl(rows: list, title: str) -> None:
+        L.append(f"<b>{title}</b>")
+        L.append("<pre>")
+        L.append(f"{'':<17}{'n':>4}{'fwd1j':>7}{'fwd24j':>8}{'win':>5}{'MAE':>7}")
+        for k, s_ in rows:
+            win = f"{s_['win_24h']:.0f}%" if s_['win_24h'] is not None else "—"
+            L.append(
+                f"{k[:16]:<17}{s_['n']:>4}{_chg(s_['med_1h'], 7)}{_chg(s_['med_24h'], 8)}"
+                f"{win:>5}{_chg(s_['med_mae'], 7)}"
+            )
+        L.append("</pre>")
+
+    if cal["by_label"]:
+        tbl(cal["by_label"], "Per putusan risiko")
+    if cal["by_flag"]:
+        tbl(cal["by_flag"], "Per flag perilaku (n ≥ 3)")
+    L.append("<i>Median. fwd = return setelah cek; win = % yang positif di 24j; "
+             "MAE = drawdown terdalam dalam 24j (median). Flag yang fwd-nya tak beda "
+             "dari yang lain setelah biaya+slippage = buang, kata mage sendiri.</i>")
     return "\n".join(L)

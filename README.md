@@ -1,10 +1,15 @@
 # SolGuard
 
-Bot Telegram pengecek keamanan & kelayakan token Solana. Feed contract address,
-bot balas dengan audit keamanan, distribusi holder, aktivitas top 10 on-chain,
-dan skor 0–100 dengan putusan layak beli atau tidak.
+Bot Telegram pengecek token Solana. Feed contract address, bot balas DUA pesan:
 
-Semua sumber data **gratis** — tidak butuh API key berbayar.
+1. **Skor risiko 0–100** — audit keamanan, distribusi holder, likuiditas,
+   kualitas transaksi. Mengukur peluang dirampok/kejebak, BUKAN peluang naik.
+2. **🧠 Perilaku & konteks** — memori token (ATH/drawdown), smart money hadir
+   atau absen, urutan harga↔holder↔likuiditas, dan "sejak lo pertama cek".
+   Lapisan ini sengaja dipisah total dari skor, dan tiap cek dicatat sebagai
+   timestamp yang dipantau 24 jam supaya nilai prediktifnya bisa diuji (`/hasil`).
+
+Semua sumber data **gratis** — tidak butuh API key berbayar (GMGN opsional).
 
 ---
 
@@ -53,6 +58,12 @@ pm2 save
 | `FLOW_BUDGET_SECONDS` | `12` | Anggaran waktu keras analisa arah; lewat itu sisanya dilaporkan `?` |
 | `MIN_LIQUIDITY_USD` | `3000` | Di bawah ini token dianggap tidak layak trade |
 | `CACHE_TTL` | `90` | Detik cache hasil analisa |
+| `GMGN_API_KEY` | kosong | Opsional. Top trader + kline harian GMGN buat panel 🧠. Rate limit per IP ~1 req/dtk |
+| `GMGN_MIN_INTERVAL` | `1.5` | Jeda minimum antar panggilan GMGN (detik) |
+| `GMGN_KLINE_PAGES_MAX` | `3` | Maks halaman kline harian (100 hari/halaman) buat memori token |
+| `TRENCH_DB_PATH` | `/root/trench/data/tahap0.sqlite` | DB kejadian smart money (dibuka read-only). Tidak ada = panel bilang sumber tak tersedia |
+| `SM_WINDOW_DAYS` | `7` | Jendela "smart money menyentuh token ini" |
+| `TRACK_INTERVAL` | `600` | Detik antar sampel harga pemantau latar 24 jam |
 
 ---
 
@@ -64,9 +75,50 @@ pm2 save
 | **DexScreener** | harga, likuiditas per pool, txns, volume, sosial |
 | **Jupiter Token API v2** | organic score (volume setelah difilter bot/wash), holder count, saldo dev |
 | **Solana RPC** | riwayat transaksi token account tiap top holder |
+| **GMGN OpenAPI** (opsional) | panel 🧠: top 100 trader (PnL, tag smart money, CEX) + kline harian buat memori token |
+| **DB trench** (lokal, read-only) | panel 🧠: kejadian beli/jual wallet smart money dari feed GMGN, dipoll 20 detik |
 
-Kalau salah satu sumber down, bot tetap jalan tapi skornya dipotong 12% per
+Kalau salah satu sumber RISIKO down, bot tetap jalan tapi skornya dipotong 12% per
 sumber yang hilang — data tidak lengkap itu ketidakpastian, bukan kabar baik.
+Sumber lapisan 🧠 yang mati TIDAK memotong skor (bukan sumber risiko), cuma
+dilaporkan di panelnya.
+
+---
+
+## Pesan 🧠 — lapisan perilaku (framework divergence @magersih)
+
+Dipisah total dari skor risiko. Alasannya: dulu pilar "aktivitas" mencampur
+tekanan beli, pertumbuhan holder, dan akumulasi top holder ke angka yang sama
+dengan mint authority — satu angka gabungan jadi kotak hitam. Sekarang skor
+cuma menilai STRUKTUR; semua sinyal arah pindah ke sini.
+
+| Panel | Isi | Sumber |
+|---|---|---|
+| ⏱ Sejak lo pertama cek | return sejak cek pertama, MAE (drawdown terdalam) & MFE sementara dari sampel pemantau | jurnal lokal |
+| 🧬 Memori token (D1) | puncak N hari, drawdown, mantan runner (mcap ≥ $500k) atau bukan, volume 7h vs 30h sebelumnya, rentang 7h; `resurrection-watch` kalau rantai absorpsi mage terpenuhi | GMGN kline |
+| 👀 Smart money (D4) | berapa wallet smart money menyentuh token ini 7 hari, net beli/jual, persentil vs token lain; **NOL saat harga & holder lari = FOMO divergence**; overlap top holder ↔ wallet smart money; ringkasan top trader GMGN | DB trench + GMGN |
+| 📐 Urutan (D3) | tabel harga / holder / volume / likuiditas 1j·6j·24j → skenario `attention_led`, `capital_led`, `fomo`, `quiet`, `mixed` | DexScreener, Jupiter, snapshot lokal |
+| 🧭 Sinyal arah | buy/sell ratio, top holder nambah/kurang, holder naik/turun — yang dulu nyampur ke skor | — |
+
+Yang sengaja TIDAK dihitung: satu angka "LAM"/skor peluang. Inputnya ditampilkan
+apa adanya; meringkasnya jadi satu skalar cuma menambah presisi palsu pada
+formula yang penulisnya sendiri bilang belum terbukti.
+
+### Callout = timestamp, `/hasil` = kalibrasi
+
+Tiap cek (termasuk Refresh) masuk tabel `checks` dengan harga, putusan risiko,
+dan flag perilaku (`sm:present`, `d3:quiet`, `d1:runner`, `overlap`, …).
+Pemantau latar menyampel harga tiap `TRACK_INTERVAL` detik lewat DexScreener
+batch (30 token/panggilan) selama 24 jam, lalu menghitung forward return
++1j/+6j/+24j, **MAE** (drawdown terdalam) dan MFE. Tanpa MAE, putusan yang
+"akhirnya naik" tapi sempat −60% kelihatan seperti kemenangan.
+
+`/hasil` menampilkan median forward return, win-rate, dan MAE per putusan
+risiko dan per flag (n ≥ 3). Flag yang fwd-nya tak beda dari yang lain setelah
+biaya+slippage = buang. Angkanya baru bermakna setelah puluhan cek.
+
+`/id` menampilkan user id lo buat diisi ke `ALLOWED_USER_IDS` — penting kalau
+`GMGN_API_KEY` diisi, supaya kuota (dan IP) tidak dipakai orang asing.
 
 ---
 
@@ -321,14 +373,18 @@ solguard/
   holders.py               analisa aktivitas top 10
   flow.py                  arah beli/jual tiap holder dari delta saldo
   clusters.py              deteksi bundle lewat kepadatan cluster
-  history.py               snapshot holder (SQLite) untuk jendela 4 jam
-  models.py                dataclass TokenReport / Verdict / ClusterReport
+  history.py               SQLite: snapshot pasar, jurnal callout, forward return/MAE, kalibrasi
+  divergence.py            lapisan perilaku: D4 smart money, D3 urutan, sinyal arah, flag jurnal
+  memory.py                TokenMemory (D1): ATH, drawdown, mantan runner, resurrection-watch
+  models.py                dataclass TokenReport / Verdict / Behaviour / Callout
   http.py                  HTTP client + cache TTL + retry
   providers/
     rugcheck.py            keamanan, LP lock sadar-tipe-pool, top holder
     dexscreener.py         harga, likuiditas, volume
     jupiter.py             organic score, holder count, audit
     solrpc.py              riwayat on-chain + batch getTransaction
+    gmgn.py                GMGN OpenAPI: top trader + kline harian, pacing 1 req/1,5 dtk + backoff 429
+    trenchdb.py            pembaca READ-ONLY DB smart money proyek trench
 ```
 
 ---

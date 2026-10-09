@@ -169,3 +169,109 @@ class Verdict:
     positives: list[str] = field(default_factory=list)
     negatives: list[str] = field(default_factory=list)
     suggested_size: str = ""
+
+
+# --------------------------------------------------------------------------- #
+# Lapisan "mage": konteks perilaku, DIPISAH dari skor risiko
+# --------------------------------------------------------------------------- #
+@dataclass
+class TokenMemory:
+    """Riwayat harga token dibanding dirinya sendiri (D1 — dead-token resurrection).
+
+    Diisi dari lilin harian GMGN. Semua angka relatif ke jendela yang benar-
+    benar terbaca (`days_covered`), bukan klaim "ATH sepanjang masa".
+    """
+
+    days_covered: int = 0
+    ath_price: float | None = None
+    ath_ts: int | None = None            # unix detik
+    ath_mcap: float | None = None        # ath_price x suplai sekarang (perkiraan)
+    drawdown_pct: float | None = None    # dari ATH ke harga sekarang, negatif
+    days_since_ath: int | None = None
+    was_runner: bool = False             # ATH mcap >= ambang runner
+    # perilaku 7 hari terakhir vs 30 hari sebelumnya
+    vol_7d_avg: float | None = None
+    vol_prior_30d_avg: float | None = None
+    vol_collapse_ratio: float | None = None   # 7d / prior 30d; <0.5 = volume ambruk
+    range_7d_pct: float | None = None         # (high-low)/low 7 hari; kecil = harga diam
+    price_7d_pct: float | None = None
+    resurrection_watch: bool = False
+    reasons: list[str] = field(default_factory=list)   # kenapa masuk / tidak masuk watch
+
+
+@dataclass
+class SmartMoneyView:
+    """D4 — kehadiran/ketiadaan smart money. Sumber: DB trench (lokal) + GMGN top trader."""
+
+    source_ok: bool = False
+    feed_healthy: bool = False
+    window_days: int = 7
+    makers_7d: int = 0
+    events_7d: int = 0
+    net_usd_7d: float = 0.0
+    makers_24h: int = 0
+    net_usd_24h: float = 0.0
+    last_ts: int | None = None
+    makers_percentile: float | None = None
+    tokens_in_window: int = 0
+    # overlap wallet (prinsip mage #3): top holder yang ternyata wallet smart money
+    top_holder_overlap: int = 0
+    # dari GMGN top trader
+    traders_total: int = 0
+    traders_in_profit: int = 0
+    traders_smart_tagged: int = 0
+    traders_suspicious: int = 0
+    traders_fresh: int = 0
+    traders_cex: list[str] = field(default_factory=list)
+    traders_realized_usd: float | None = None
+    # bacaan akhir
+    status: str = "unknown"   # present / absent / fomo_divergence / unknown
+    reading: str = ""
+
+
+@dataclass
+class Divergence:
+    """D3 — urutan attention -> capital -> price, dibaca dari perubahan relatif."""
+
+    price_1h: float | None = None
+    price_6h: float | None = None
+    price_24h: float | None = None
+    holders_1h: float | None = None
+    holders_6h: float | None = None
+    holders_24h: float | None = None
+    vol_accel_1h: float | None = None    # (vol 1j x 24) / vol 24j; >1 = akselerasi
+    vol_accel_6h: float | None = None    # (vol 6j x 4) / vol 24j
+    liq_1h: float | None = None          # dari snapshot lokal; None kalau belum ada riwayat
+    liq_6h: float | None = None
+    liq_24h: float | None = None
+    liq_points: int = 0
+    scenario: str = "unknown"            # attention_led / capital_led / fomo / quiet / unknown
+    reading: str = ""
+
+
+@dataclass
+class Behaviour:
+    memory: TokenMemory = field(default_factory=TokenMemory)
+    smart: SmartMoneyView = field(default_factory=SmartMoneyView)
+    divergence: Divergence = field(default_factory=Divergence)
+    # sinyal arah yang DULU tercampur ke skor; sekarang dipisah ke sini
+    positives: list[str] = field(default_factory=list)
+    negatives: list[str] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)   # tag ringkas yang masuk jurnal
+
+
+@dataclass
+class Callout:
+    """Satu cek = satu timestamp. Dipakai untuk forward return & MAE."""
+
+    id: int
+    ts: int
+    price: float | None
+    risk_score: float | None
+    label: str
+    fwd_1h: float | None = None
+    fwd_6h: float | None = None
+    fwd_24h: float | None = None
+    mae_24h: float | None = None
+    mfe_24h: float | None = None
+    done: bool = False

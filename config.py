@@ -61,3 +61,25 @@ BUNDLE_MIN_PCT_PER_WALLET = _float("BUNDLE_MIN_PCT_PER_WALLET", 0.05)
 BUNDLE_MIN_TOTAL_PCT = _float("BUNDLE_MIN_TOTAL_PCT", 1.0)
 
 HTTP_TIMEOUT = 25.0
+
+# ── Lapisan "mage" (divergence framework, Okt 2026) ───────────────────────
+# GMGN OpenAPI. Rate limit PER IP (bukan per key) ~1 req/detik, dan IP ini
+# juga dipakai trench-kolektor (1 req/20 detik). Jeda minimum di sini sengaja
+# lebih longgar dari 1 detik supaya dua proses tidak saling bikin banned.
+GMGN_API_KEY = (os.getenv("GMGN_API_KEY") or "").strip()
+GMGN_HOST = "https://openapi.gmgn.ai"
+GMGN_MIN_INTERVAL = _float("GMGN_MIN_INTERVAL", 1.5)
+# Berapa halaman kline harian (100 lilin/halaman) yang boleh ditarik untuk
+# TokenMemory. 3 halaman = 300 hari = ~4,5 detik di jeda 1,5 s.
+GMGN_KLINE_PAGES_MAX = _int("GMGN_KLINE_PAGES_MAX", 3)
+
+# Database Tahap 0 proyek trench (read-only). Berisi aliran beli/jual wallet
+# smart money dari feed GMGN sejak 6 Okt 2026 — sumber lokal untuk D4
+# "smart money absence" tanpa satu pun panggilan API.
+TRENCH_DB_PATH = os.getenv("TRENCH_DB_PATH") or "/root/trench/data/tahap0.sqlite"
+SM_WINDOW_DAYS = _int("SM_WINDOW_DAYS", 7)
+
+# Jurnal callout-sebagai-timestamp: tiap cek dicatat, harga dipantau 24 jam
+# ke depan untuk forward return + MAE. Interval sampling, detik.
+TRACK_INTERVAL = _int("TRACK_INTERVAL", 600)
+TRACK_HORIZON_SECONDS = 24 * 3600 + 15 * 60
