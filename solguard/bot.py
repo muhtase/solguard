@@ -21,8 +21,9 @@ import config
 
 from . import history
 from .aggregate import analyze, behaviour
-from .http import cache_drop, cache_purge, close_client, get_json
+from .http import cache_drop, cache_purge, close_client
 from .models import Behaviour
+from .providers import dexscreener, jupiter
 from .render import TELEGRAM_LIMIT, render_behaviour, render_calibration, render_report
 from .scoring import evaluate
 
@@ -297,38 +298,32 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Error tak tertangani", exc_info=ctx.error)
 
 
-DEX_BATCH = "https://api.dexscreener.com/tokens/v1/solana/"
-
-
 async def _track_once() -> None:
     """Sampel harga/likuiditas token yang masih dalam jendela pantau 24 jam,
-    lalu finalisasi callout yang sudah jatuh tempo. DexScreener batch 30/panggilan."""
+    lalu finalisasi callout yang sudah jatuh tempo.
+
+    Rumusnya WAJIB sama dengan analyze(): harga = Jupiter (fallback pool
+    terbesar DexScreener), likuiditas = max(total semua pool DexScreener,
+    Jupiter). Diukur 9 Okt 2026 di BONK: endpoint batch DexScreener `tokens/v1`
+    cuma $337k, `latest/dex/tokens` $1,47M, Jupiter $6,6M — kalau pemantau
+    pakai sumber lain, kolom 'likuiditas 24j' mengarang penurunan −80..95%.
+    """
     mints = history.pending_mints()
     samples: dict[str, tuple[float | None, float | None]] = {}
-    for i in range(0, len(mints), 30):
-        chunk = mints[i : i + 30]
-        data = await get_json(DEX_BATCH + ",".join(chunk))
-        if not isinstance(data, list):
+    for mint in mints:
+        pairs, jp = await asyncio.gather(dexscreener.fetch_pairs(mint), jupiter.fetch_token(mint))
+        if not pairs and not jp:
             continue
-        best: dict[str, dict] = {}
-        for p in data:
-            if not isinstance(p, dict):
-                continue
-            m = (p.get("baseToken") or {}).get("address")
-            liq = float((p.get("liquidity") or {}).get("usd") or 0)
-            if m and (m not in best or liq > float((best[m].get("liquidity") or {}).get("usd") or 0)):
-                best[m] = p
-        for m, p in best.items():
-            try:
-                price = float(p.get("priceUsd")) if p.get("priceUsd") is not None else None
-            except (TypeError, ValueError):
-                price = None
-            # likuiditas total semua pool, konsisten dengan analyze()
-            liq_total = sum(
-                float((q.get("liquidity") or {}).get("usd") or 0)
-                for q in data if isinstance(q, dict) and (q.get("baseToken") or {}).get("address") == m
-            )
-            samples[m] = (price, liq_total or None)
+        price = (jp or {}).get("usdPrice")
+        if price is None and pairs:
+            price = dexscreener.best_pair(pairs).get("priceUsd")
+        try:
+            price = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price = None
+        liq = max(dexscreener.total_liquidity(pairs), float((jp or {}).get("liquidity") or 0.0))
+        samples[mint] = (price, liq or None)
+        await asyncio.sleep(0.25)   # DexScreener 300 req/menit; ini jauh di bawahnya
     if samples:
         history.add_samples(samples)
     n = history.finalize_due()
