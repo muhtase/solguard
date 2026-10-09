@@ -91,6 +91,8 @@ async def _deny(update: Update) -> None:
 
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    u = update.effective_user
+    log.info("/start dari user id=%s username=%s", u.id if u else "?", u.username if u else "?")
     if not _authorized(update):
         return await _deny(update)
     await update.effective_message.reply_html(WELCOME, disable_web_page_preview=True)
