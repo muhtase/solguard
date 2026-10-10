@@ -8,6 +8,7 @@ bukan aktivitas wallet mereka secara umum.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import logging
 
 import config
@@ -77,7 +78,25 @@ async def get_transactions(
     if not signatures:
         return out
 
-    opts = {"maxSupportedTransactionVersion": 0, "encoding": "json"}
+    # Alasan gagal per signature. Tanpa ini log cuma bilang "N gagal", dan
+    # salah konfigurasi yang permanen (mis. maxSupportedTransactionVersion
+    # ketinggalan) tidak bisa dibedakan dari rate limit yang sementara.
+    last_err: dict[str, str] = {}
+    dropped: Counter[str] = Counter()
+
+    def note(sig: str, data) -> str:
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            tag = f"rpc{err.get('code')}"
+        elif isinstance(data, dict) and data.get("result") is None:
+            tag = "result-null"
+        else:
+            tag = "tanpa-balasan"
+        last_err[sig] = tag
+        return tag
+
+    opts = {"maxSupportedTransactionVersion": config.RPC_MAX_TX_VERSION,
+            "encoding": "json"}
     remaining = list(dict.fromkeys(signatures))  # buang duplikat, jaga urutan
 
     def out_of_time() -> bool:
@@ -97,7 +116,9 @@ async def get_transactions(
             data = await post_json(config.SOLANA_RPC_URL, payload, retries=1)
         if isinstance(data, dict) and isinstance(data.get("result"), dict):
             out[sig] = data["result"]
+            last_err.pop(sig, None)
             return None
+        note(sig, data)
         return sig  # gagal / kena limit — coba lagi di putaran berikutnya
 
     async def fetch_batch(chunk: list[str]) -> list[str]:
@@ -129,12 +150,18 @@ async def get_transactions(
             result = item.get("result")
             if isinstance(result, dict):
                 out[sig] = result
+                last_err.pop(sig, None)
                 continue
+            tag = note(sig, item)
             err = item.get("error") or {}
             # 429 = layak dicoba lagi. Error lain (tx tidak ditemukan,
             # sudah dipangkas dari ledger) percuma diulang.
             if isinstance(err, dict) and err.get("code") in (429, -32005):
                 retry.append(sig)
+            else:
+                # Dibuang tanpa diulang — tetap dihitung, supaya tidak
+                # menghilang begitu saja dari laporan.
+                dropped[tag] += 1
         return retry
 
     for rnd in range(max_rounds):
@@ -162,11 +189,23 @@ async def get_transactions(
         if remaining and not out_of_time():
             await asyncio.sleep(min(1.2 * (rnd + 1), 2.0))
 
-    if remaining:
+    if remaining or dropped:
+        sebab = Counter(last_err.get(s, "tanpa-balasan") for s in remaining)
+        sebab.update(dropped)
+        total = len(set(signatures))
         log.info(
-            "getTransaction: %d dari %d signature tetap gagal setelah %d putaran",
-            len(remaining),
-            len(set(signatures)),
+            "getTransaction: %d dari %d signature gagal setelah %d putaran — sebab: %s%s",
+            len(remaining) + sum(dropped.values()),
+            total,
             max_rounds,
+            ", ".join(f"{k}×{v}" for k, v in sebab.most_common()),
+            " (kehabisan anggaran waktu)" if out_of_time() else "",
         )
+        if sebab.get("rpc-32015"):
+            log.warning(
+                "RPC menolak %d transaksi karena versinya di atas "
+                "RPC_MAX_TX_VERSION=%s — naikkan, kalau tidak swap DEX "
+                "tidak terbaca dan arah aliran jadi bias ke transaksi legacy.",
+                sebab["rpc-32015"], config.RPC_MAX_TX_VERSION,
+            )
     return out

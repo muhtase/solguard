@@ -24,7 +24,13 @@ from .aggregate import analyze, behaviour
 from .http import cache_drop, cache_purge, close_client
 from .models import Behaviour
 from .providers import dexscreener, jupiter
-from .render import TELEGRAM_LIMIT, render_behaviour, render_calibration, render_report
+from .render import (
+    TELEGRAM_LIMIT,
+    render_behaviour,
+    render_calibration,
+    render_report,
+    to_plain,
+)
 from .scoring import evaluate
 
 log = logging.getLogger(__name__)
@@ -163,6 +169,18 @@ async def _build_behaviour(rep, verdict, *, user_id: int | None, journal: bool) 
     return text
 
 
+async def _edit_html(edit, text: str, **kw) -> None:
+    """Edit pesan sebagai HTML; kalau Telegram menolak markup-nya, ulang sebagai
+    teks polos. Satu karakter "<" liar tidak boleh menghapus seluruh laporan."""
+    try:
+        await edit(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True, **kw)
+    except BadRequest as exc:
+        if "can't parse entities" not in str(exc).lower():
+            raise
+        log.warning("Markup ditolak Telegram (%s) — kirim versi teks polos.", exc)
+        await edit(to_plain(text), disable_web_page_preview=True, **kw)
+
+
 async def _run_check(update: Update, mint: str) -> None:
     msg = update.effective_message
     user_id = update.effective_user.id if update.effective_user else None
@@ -182,16 +200,14 @@ async def _run_check(update: Update, mint: str) -> None:
         # Pesan 2 dikirim dulu sebagai placeholder supaya id-nya bisa ditaruh
         # di tombol Refresh pesan 1 — Refresh lalu memperbarui keduanya.
         status2: Message = await status.reply_html("🧠 Membaca perilaku &amp; smart money…")
-        await status.edit_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+        await _edit_html(
+            status.edit_text, text,
             reply_markup=_keyboard(mint, status2.message_id),
         )
         # Pesan 1 sudah terkirim utuh; kegagalan pesan 2 tidak boleh menimpanya
         try:
             text2 = await _build_behaviour(rep, verdict, user_id=user_id, journal=True)
-            await status2.edit_text(text2, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+            await _edit_html(status2.edit_text, text2)
         except Exception:
             log.exception("Pesan perilaku gagal untuk %s", mint)
             await status2.edit_text("⚠️ Lapisan perilaku gagal dimuat. Laporan risiko di atas tetap berlaku.")
@@ -225,10 +241,8 @@ async def on_refresh(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             return
         text, rep, verdict = built
         try:
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+            await _edit_html(
+                query.edit_message_text, text,
                 reply_markup=_keyboard(mint, msg2_id),
             )
         except BadRequest as exc:
@@ -240,9 +254,9 @@ async def on_refresh(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             # Refresh = cek ulang, dicatat juga; jadi deret timestamp-nya rapat
             text2 = await _build_behaviour(rep, verdict, user_id=user_id, journal=True)
             try:
-                await ctx.bot.edit_message_text(
-                    text2, chat_id=query.message.chat_id, message_id=msg2_id,
-                    parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                await _edit_html(
+                    ctx.bot.edit_message_text, text2,
+                    chat_id=query.message.chat_id, message_id=msg2_id,
                 )
             except BadRequest as exc:
                 if "not modified" not in str(exc).lower():

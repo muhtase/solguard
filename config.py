@@ -48,6 +48,16 @@ FLOW_TX_PER_HOLDER = _int("FLOW_TX_PER_HOLDER", 4)
 RPC_BATCH_SIZE = _int("RPC_BATCH_SIZE", 3)
 RPC_BATCH_PACE = _float("RPC_BATCH_PACE", 0.12)  # jeda antar batch, detik
 
+# Versi transaksi tertinggi yang kita akui ke RPC. Ini BUKAN setelan kosmetik:
+# kalau terlalu rendah, RPC membalas HTTP 200 + error -32015 ("Transaction
+# version (N) is not supported by the requesting client") per transaksi, dan
+# transaksi itu hilang dari analisa arah aliran. Diukur 10 Okt 2026 di Helius:
+# dengan nilai 0, hanya 4 dari 20 transaksi terbaca (yang legacy) — justru
+# swap DEX (pakai address lookup table, versi 0/1) yang terbuang semua.
+# Parser kita membaca meta.pre/postTokenBalances lewat field `owner`, yang
+# bentuknya sama di semua versi, jadi nilai tinggi aman.
+RPC_MAX_TX_VERSION = _int("RPC_MAX_TX_VERSION", 128)
+
 # Anggaran waktu keras untuk analisa arah beli/jual. Di public RPC yang
 # di-throttle, retry bisa berlarut sampai puluhan detik dan bikin bot terasa
 # menggantung. Lewat batas ini, analisa berhenti dan holder yang belum terbaca

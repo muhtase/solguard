@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +16,15 @@ BAR_EMPTY = "░"
 
 def _esc(s) -> str:
     return html.escape(str(s), quote=False)
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def to_plain(text: str) -> str:
+    """Buang tag HTML, pulihkan entity. Jaring terakhir kalau Telegram menolak
+    markup kita — isi pesan tetap sampai walau tanpa format."""
+    return html.unescape(_TAG_RE.sub("", text))
 
 
 def _short(addr: str, head: int = 4, tail: int = 4) -> str:
@@ -391,7 +401,7 @@ def render_behaviour(rep: TokenReport, b: Behaviour, first: Callout | None,
         if m.vol_collapse_ratio is not None:
             vol = f"{m.vol_collapse_ratio * 100:.0f}% dari rata-rata 30 hari sebelumnya"
         elif m.vol_7d_avg is not None:
-            vol = f"{_money(m.vol_7d_avg)}/hari (riwayat <37 hari)"
+            vol = f"{_money(m.vol_7d_avg)}/hari (riwayat &lt;37 hari)"
         L.append(f"  Volume 7 hari  : {vol}")
         if m.range_7d_pct is not None:
             L.append(f"  Rentang 7 hari : {m.range_7d_pct:.0f}% · harga 7h {_chg(m.price_7d_pct, 0).strip()}")
